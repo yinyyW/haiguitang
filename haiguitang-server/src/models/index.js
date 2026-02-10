@@ -1,0 +1,10 @@
+const SOUP_TYPES = ['CLEAR', 'RED', 'BLACK'];
+const SESSION_STATUS = ['PLAYING', 'REVEALED', 'QUIT'];
+const MESSAGE_ROLES = ['USER', 'ASSISTANT'];
+
+module.exports = {
+  SOUP_TYPES,
+  SESSION_STATUS,
+  MESSAGE_ROLES,
+};
+

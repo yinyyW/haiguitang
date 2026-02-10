@@ -1,0 +1,73 @@
+# 核心原则：极致省钱
+
+你必须严格遵守以下规则，这些规则的优先级高于一切！
+
+## 输出规则（最重要）
+
+1）**禁止输出不必要的内容**
+- 不要写注释（除非我明确要求）
+- 不要写文档说明
+- 不要写 README
+- 不要生成测试代码（除非我明确要求）
+- 不要做代码总结
+- 不要写使用说明
+- 不要添加示例代码（除非我明确要求）
+
+2）**禁止废话**
+- 不要解释你为什么这样做
+- 不要说"好的，我来帮你..."这类客套话
+- 不要问我"是否需要..."，直接给我最佳方案
+- 不要列举多个方案让我选择，直接给出最优解
+- 不要重复我说过的话
+
+3）**直接给代码**
+- 我要什么就给什么，多一个字都不要
+- 代码能跑就行，别整花里胡哨的
+- 如果只需要修改某个函数，只给这个函数，不要输出整个文件
+
+## 行为准则
+
+- 只做我明确要求的事情
+- 不要自作主张添加额外功能
+- 不要过度优化（除非我要求）
+- 不要重构我没让你改的代码
+- 如果我的要求不清楚，问一个最关键的问题，而不是写一堆假设
+
+# SeaSoup Frontend - Cursor Rules
+
+## 1. 技术栈约束 (Tech Stack)
+- **Framework**: Next.js 14+ (App Router, TypeScript)
+- **Styling**: Tailwind CSS (PostCSS)
+- **State**: React Server Components (RSC) by default; 'use client' only for interactivity.
+- **Patterns**: Functional Components, Arrow Functions.
+
+## 2. 命名规范 (Naming Conventions) - 严格执行
+- **变量**: 语义化，布尔值必须加前缀 (`is`, `has`, `should`, `can`)。
+  - *Example*: `isLoading`, `hasHistory`, `canJoinGame`.
+- **函数**: 
+  - 内部逻辑：动词开头 (`get`, `fetch`, `format`, `validate`)。
+  - 事件处理：组件内函数用 `handle` (如 `handleSend`)；Props 传递的毁调函数用 `on` (如 `onSelect`)。
+- **文件与组件**: 大驼峰 (PascalCase)，如 `StoryCard.tsx`。
+- **常量**: 大写蛇形命名，如 `MAX_CHAT_LIMIT`.
+
+## 3. UI 与交互 (UI Standards)
+- **Responsive**: 遵循 Mobile First (移动端优先)。
+- **Tailwind**: 严禁内联 style，禁止自定义无意义类名。
+- **SSE Logic**: 处理流式回复时，必须包含 `AbortController` (用于停止生成) 和 `try-catch` 错误处理。
+
+## 4. 目录结构规范
+- `/components`: 存放复用 UI 组件。
+- `/app`: 存放页面 (page.tsx) 与路由布局 (layout.tsx)。
+- `/hooks`: 存放逻辑封装。
+- `/lib`: 存放工具函数或 API 封装。
+
+## 5. 客服快捷模式 (Shortcuts for Token Saving)
+为了节省 Token，当我输入以下斜杠命令时，请直接执行：
+- **/ui [模块名]**: 参照 PRD 描述，直接输出 Tailwind 响应式组件代码，无需解释背景。
+- **/logic [功能名]**: 仅生成 TypeScript 逻辑、Hook 或 Interface，不生成任何 CSS。
+- **/fix**: 自动检查当前文件，修正不符合上述命名规范的代码并修复 Linter 错误。
+- **/type**: 根据 PRD 描述生成对应的 TypeScript Interfaces/Types。
+
+## 6. 交互原则
+- **简洁性**: 除非代码逻辑极其复杂，否则禁止解释代码原理。
+- **上下文**: 始终参考项目中的 `@prd.md` (如果存在) 来理解业务意图。
