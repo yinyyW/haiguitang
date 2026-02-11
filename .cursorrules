@@ -68,6 +68,14 @@
 - **/fix**: 自动检查当前文件，修正不符合上述命名规范的代码并修复 Linter 错误。
 - **/type**: 根据 PRD 描述生成对应的 TypeScript Interfaces/Types。
 
-## 6. 交互原则
+## 6. TypeScript & 类型安全 (Type Safety)
+- **显式返回类型**：所有函数（包括组件、Hook、API 处理函数）必须显式定义返回类型。
+  - *Good*: `const fetchData = (): Promise<Data> => {}`
+  - *Bad*: `const fetchData = () => {}`
+- **严禁使用 any**：禁止使用 `any` 类型。若类型不确定，优先使用 `unknown` 并配合类型守卫（Type Guards）。
+- **组件 Props**：所有组件必须定义 `interface` 或 `type` 作为 Props 类型。
+- **自动补全原则**：在生成逻辑代码前，优先根据 PRD 或 Context 定义缺失的 Interface。
+
+## 7. 交互原则
 - **简洁性**: 除非代码逻辑极其复杂，否则禁止解释代码原理。
 - **上下文**: 始终参考项目中的 `@prd.md` (如果存在) 来理解业务意图。

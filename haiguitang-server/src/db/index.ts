@@ -1,8 +1,8 @@
-const { createPool } = require('mysql2/promise');
+import { createPool, Pool } from 'mysql2/promise';
 
-let pool;
+let pool: Pool | undefined;
 
-const getDbPool = () => {
+export const getDbPool = (): Pool => {
   if (!pool) {
     pool = createPool({
       host: process.env.DB_HOST || '127.0.0.1',
@@ -15,18 +15,12 @@ const getDbPool = () => {
       queueLimit: 0,
     });
   }
-
   return pool;
 };
 
-const testConnection = async () => {
+export const testConnection = async (): Promise<boolean> => {
   const db = getDbPool();
   const [rows] = await db.query('SELECT 1 AS ok');
-  return rows && rows[0] && rows[0].ok === 1;
+  const r = rows as { ok: number }[];
+  return r.length > 0 && r[0].ok === 1;
 };
-
-module.exports = {
-  getDbPool,
-  testConnection,
-};
-
