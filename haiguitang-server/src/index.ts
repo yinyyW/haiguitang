@@ -1,6 +1,7 @@
 import fastify from 'fastify';
 import { registerSessionRoutes } from './routes/sessions';
 import dotenv from 'dotenv';
+import fastifyCors from '@fastify/cors';
 
 dotenv.config();
 
@@ -8,6 +9,9 @@ const buildServer = async (): Promise<ReturnType<typeof fastify>> => {
   const app = fastify({
     logger: true,
   });
+  await app.register(fastifyCors, {
+    origin: true,
+  })
 
   app.get('/health', async (): Promise<{ ok: boolean }> => {
     return { ok: true };

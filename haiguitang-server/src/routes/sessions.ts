@@ -4,8 +4,11 @@ import { getRandomPuzzleBySoupType } from '../repositories/puzzleRepository';
 import {
   createSession,
   getSessionById,
+  getSessionsByUserId,
   incrementQuestionCount,
+  updateSessionStatus,
 } from '../repositories/sessionRepository';
+import { getPuzzleById } from '../repositories/puzzleRepository';
 import { createMessage, getMessagesBySessionId } from '../repositories/messageRepository';
 import {
   formatSessionForApi,
@@ -44,6 +47,19 @@ const ensureUser = async (
 };
 
 export const registerSessionRoutes = async (app: FastifyInstance): Promise<void> => {
+  app.get('/api/sessions', async (request, reply) => {
+    const user = await ensureUser(request, reply);
+    if (!user) return;
+
+    const rawLimit = (request.query as { limit?: number })?.limit;
+    const limit = Math.min(Number(rawLimit) || 50, 100);
+    const sessions = await getSessionsByUserId(user.id, limit);
+
+    return reply.send({
+      items: sessions.map(formatSessionForApi),
+    });
+  });
+
   app.post<{
     Body: { soup_type?: string; difficulty?: number };
   }>('/api/sessions', async (request, reply) => {
@@ -88,6 +104,45 @@ export const registerSessionRoutes = async (app: FastifyInstance): Promise<void>
       puzzle: formatPuzzleForApi(puzzle),
     });
   });
+
+  app.get<{ Params: { sessionId: string } }>(
+    '/api/sessions/:sessionId',
+    async (request, reply) => {
+      const user = await ensureUser(request, reply);
+      if (!user) return;
+
+      const sessionId = Number(request.params.sessionId);
+      if (!Number.isInteger(sessionId) || sessionId < 1) {
+        return reply.status(400).send({
+          error: replyError('INVALID_ARGUMENT', 'Invalid session id', getRequestId()),
+        });
+      }
+
+      const session = await getSessionById(sessionId);
+      if (!session) {
+        return reply.status(404).send({
+          error: replyError('NOT_FOUND', 'Session not found', getRequestId()),
+        });
+      }
+      if (session.user_id !== user.id) {
+        return reply.status(403).send({
+          error: replyError('FORBIDDEN', 'Not your session', getRequestId()),
+        });
+      }
+
+      const puzzle = await getPuzzleById(session.puzzle_id);
+      if (!puzzle) {
+        return reply.status(404).send({
+          error: replyError('NOT_FOUND', 'Puzzle not found', getRequestId()),
+        });
+      }
+
+      return reply.send({
+        session: formatSessionForApi(session),
+        puzzle: formatPuzzleForApi(puzzle),
+      });
+    },
+  );
 
   app.get<{ Params: { sessionId: string } }>(
     '/api/sessions/:sessionId/messages',
@@ -203,4 +258,83 @@ export const registerSessionRoutes = async (app: FastifyInstance): Promise<void>
         : undefined,
     });
   });
+
+  app.post<{ Params: { sessionId: string } }>(
+    '/api/sessions/:sessionId/reveal',
+    async (request, reply) => {
+      console.log(`reveal ${request.params.sessionId} answer`);
+      const user = await ensureUser(request, reply);
+      if (!user) return;
+
+      const sessionId = Number(request.params.sessionId);
+      if (!Number.isInteger(sessionId) || sessionId < 1) {
+        return reply.status(400).send({
+          error: replyError('INVALID_ARGUMENT', 'Invalid session id', getRequestId()),
+        });
+      }
+
+      const session = await getSessionById(sessionId);
+      if (!session) {
+        return reply.status(404).send({
+          error: replyError('NOT_FOUND', 'Session not found', getRequestId()),
+        });
+      }
+      if (session.user_id !== user.id) {
+        return reply.status(403).send({
+          error: replyError('FORBIDDEN', 'Not your session', getRequestId()),
+        });
+      }
+
+      const updated = await updateSessionStatus(sessionId, 'REVEALED');
+      const puzzle = await getPuzzleById(session.puzzle_id);
+      if (!puzzle || !updated) {
+        return reply.status(500).send({
+          error: replyError('INTERNAL', 'Failed to reveal', getRequestId()),
+        });
+      }
+
+      return reply.send({
+        session: formatSessionForApi(updated),
+        puzzle: formatPuzzleForApi({ ...puzzle, bottom: puzzle.bottom }),
+      });
+    },
+  );
+
+  app.post<{ Params: { sessionId: string } }>(
+    '/api/sessions/:sessionId/quit',
+    async (request, reply) => {
+      const user = await ensureUser(request, reply);
+      if (!user) return;
+
+      const sessionId = Number(request.params.sessionId);
+      if (!Number.isInteger(sessionId) || sessionId < 1) {
+        return reply.status(400).send({
+          error: replyError('INVALID_ARGUMENT', 'Invalid session id', getRequestId()),
+        });
+      }
+
+      const session = await getSessionById(sessionId);
+      if (!session) {
+        return reply.status(404).send({
+          error: replyError('NOT_FOUND', 'Session not found', getRequestId()),
+        });
+      }
+      if (session.user_id !== user.id) {
+        return reply.status(403).send({
+          error: replyError('FORBIDDEN', 'Not your session', getRequestId()),
+        });
+      }
+
+      const updated = await updateSessionStatus(sessionId, 'QUIT');
+      if (!updated) {
+        return reply.status(500).send({
+          error: replyError('INTERNAL', 'Failed to quit', getRequestId()),
+        });
+      }
+
+      return reply.send({
+        session: formatSessionForApi(updated),
+      });
+    },
+  );
 };

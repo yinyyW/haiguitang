@@ -35,12 +35,14 @@ export const formatPuzzleForApi = (p: {
   surface: string;
   difficulty: number;
   tags: string[] | null;
+  bottom?: string;
 }) => ({
   id: formatId(p.id),
   title: p.title,
   surface: p.surface,
   difficulty: p.difficulty,
   tags: p.tags ?? [],
+  ...(p.bottom != null && { bottom: p.bottom }),
 });
 
 export const formatMessageForApi = (m: {

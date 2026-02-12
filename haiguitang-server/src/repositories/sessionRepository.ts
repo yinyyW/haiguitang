@@ -15,6 +15,18 @@ export const createSession = async (input: CreateSessionInput): Promise<Session 
   return list[0] ?? null;
 };
 
+export const getSessionsByUserId = async (
+  userId: number,
+  limit: number,
+): Promise<Session[]> => {
+  const db = getDbPool();
+  const [rows] = await db.query(
+    'SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+    [userId, limit],
+  );
+  return rows as Session[];
+};
+
 export const getSessionById = async (id: number): Promise<Session | null> => {
   const db = getDbPool();
   const [rows] = await db.query('SELECT * FROM sessions WHERE id = ?', [id]);
@@ -29,4 +41,16 @@ export const incrementQuestionCount = async (sessionId: number): Promise<void> =
     'UPDATE sessions SET question_count = question_count + 1, updated_at = NOW(3) WHERE id = ?',
     [sessionId],
   );
+};
+
+export const updateSessionStatus = async (
+  sessionId: number,
+  status: 'PLAYING' | 'REVEALED' | 'QUIT',
+): Promise<Session | null> => {
+  const db = getDbPool();
+  await db.query(
+    'UPDATE sessions SET status = ?, ended_at = NOW(3), updated_at = NOW(3) WHERE id = ?',
+    [status, sessionId],
+  );
+  return getSessionById(sessionId);
 };
