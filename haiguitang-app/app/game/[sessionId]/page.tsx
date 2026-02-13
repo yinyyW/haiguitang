@@ -15,8 +15,14 @@ import {
   postQuestion,
   revealAnswer,
   endSession,
+  triggerSessionImage,
+  fetchSessionImages,
 } from "../../../lib/api/sessions";
-import type { Session, Puzzle, Message } from "../../../lib/types";
+import type { Session, Puzzle, Message, SessionImage, AnswerType } from "../../../lib/types";
+import { useSseStream } from "@/hooks/useSseStream";
+
+const isSseEnabled = process.env.NEXT_PUBLIC_ENABLE_SSE === "true";
+const VALID_ANSWER_TYPES: string[] = ["YES", "NO", "IRRELEVANT", "BOTH"];
 
 const GamePage = (): ReactNode => {
   const params = useParams();
@@ -30,6 +36,10 @@ const GamePage = (): ReactNode => {
   const [isError, setIsError] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [isSending, setIsSending] = useState<boolean>(false);
+  const [images, setImages] = useState<SessionImage[]>([]);
+  const [isImageLoading, setIsImageLoading] = useState<boolean>(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const { startStream, stopStream, isStreaming, streamError } = useSseStream();
 
   const loadSession = useCallback(async (): Promise<void> => {
     if (!sessionId) return;
@@ -58,6 +68,16 @@ const GamePage = (): ReactNode => {
     }
   }, [sessionId]);
 
+  const loadImages = useCallback(async (): Promise<void> => {
+    if (!sessionId) return;
+    try {
+      const items = await fetchSessionImages(sessionId);
+      setImages(items);
+    } catch {
+      // 静默失败，保持现状
+    }
+  }, [sessionId]);
+
   useEffect(() => {
     loadSession();
   }, [loadSession]);
@@ -65,23 +85,189 @@ const GamePage = (): ReactNode => {
   useEffect(() => {
     if (session != null) {
       loadMessages();
+      void loadImages();
     }
-  }, [session, loadMessages]);
+  }, [session, loadMessages, loadImages]);
+
+  useEffect(() => {
+    if (streamError) {
+      setErrorMessage(streamError);
+    }
+  }, [streamError]);
+
+  /**
+   * SSE Event handler
+   * assistant.delta: AI token generating
+   * assistant.done: SSE finieshed
+   * session.updated: Update question_count/status
+   * error: AI error
+   */
+  const eventHandler = useCallback(
+    (eventName: string, payload: unknown): void => {
+      if (eventName === "assistant.delta") {
+        if (
+          typeof payload === "object" &&
+          payload !== null &&
+          "delta" in payload &&
+          typeof (payload as { delta: unknown }).delta === "string"
+        ) {
+          // Add newly generated text stream into assistant message
+          const delta = (payload as { delta: string }).delta;
+          setMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const next = [...prev];
+            const lastIndex = next.length - 1;
+            const last = next[lastIndex];
+            if (last.role === "ASSISTANT") {
+              next[lastIndex] = {
+                ...last,
+                content: `${last.content}${delta}`,
+              };
+            }
+            return next;
+          });
+        }
+      } else if (eventName === "assistant.done") {
+        if (
+          typeof payload === "object" &&
+          payload !== null &&
+          "content" in payload
+        ) {
+          const data = payload as {
+            content?: unknown;
+            answer_type?: unknown;
+          };
+          setMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const next = [...prev];
+            const lastIndex = next.length - 1;
+            const last = next[lastIndex];
+            next[lastIndex] = {
+              ...last,
+              content:
+                typeof data.content === "string" ? data.content : last.content,
+              answer_type: typeof data.answer_type === "string" &&
+              VALID_ANSWER_TYPES.includes(
+                data.answer_type as Exclude<AnswerType, null>,
+              )
+                ? (data.answer_type as AnswerType)
+                : last.answer_type,
+            };
+            return next;
+          });
+        }
+      } else if (eventName === "session.updated") {
+        if (
+          typeof payload === "object" &&
+          payload !== null &&
+          "question_count" in payload &&
+          "status" in payload
+        ) {
+          const data = payload as {
+            question_count?: unknown;
+            status?: unknown;
+          };
+          setSession((prev) => {
+            if (!prev) return prev;
+            const nextQuestionCount =
+              typeof data.question_count === "number"
+                ? data.question_count
+                : prev.question_count + 1;
+            const nextStatus =
+              data.status === "PLAYING" ||
+                data.status === "REVEALED" ||
+                data.status === "QUIT"
+                ? data.status
+                : prev.status;
+            return {
+              ...prev,
+              question_count: nextQuestionCount,
+              status: nextStatus,
+            };
+          });
+        }
+      } else if (eventName === "error") {
+        const message =
+          typeof payload === "object" &&
+            payload !== null &&
+            "message" in payload &&
+            typeof (payload as { message?: unknown }).message === "string"
+            ? (payload as { message: string }).message
+            : "流式回复出错，请稍后重试。";
+        setErrorMessage(message);
+      }
+    },
+    [setMessages, setSession, setErrorMessage],
+  );
+
+  const handleGenerateImage = useCallback(async (): Promise<void> => {
+    if (!sessionId) return;
+    setIsImageLoading(true);
+    setImageError(null);
+    try {
+      await triggerSessionImage(sessionId);
+      const items = await fetchSessionImages(sessionId);
+      setImages(items);
+    } catch (e) {
+      setImageError(e instanceof Error ? e.message : "生成配图失败");
+    } finally {
+      setIsImageLoading(false);
+    }
+  }, [sessionId]);
 
   const handleSend = useCallback(
     async (content: string): Promise<void> => {
-      if (!sessionId || isSending || session?.status !== "PLAYING") return;
+      if (!sessionId || isSending || isStreaming || session?.status !== "PLAYING")
+        return;
       setIsSending(true);
       try {
-        const { user_message, assistant_message } = await postQuestion(
-          sessionId,
+        const createdAt = new Date().toISOString();
+        const optimisticUser: Message = {
+          id: `user_${createdAt}`,
+          role: "USER",
           content,
-        );
-        setMessages((prev) => [...prev, user_message, assistant_message]);
-        if (session) {
-          setSession((s) =>
-            s ? { ...s, question_count: s.question_count + 1 } : null,
-          );
+          answer_type: null,
+          created_at: createdAt,
+        };
+        const optimisticAssistant: Message = {
+          id: `assistant_${createdAt}`,
+          role: "ASSISTANT",
+          content: "",
+          answer_type: null,
+          created_at: createdAt,
+        };
+        setMessages((prev) => [...prev, optimisticUser, optimisticAssistant]);
+
+        if (isSseEnabled) {
+          await startStream({
+            sessionId,
+            content,
+            onEvent: eventHandler,
+          });
+        } else {
+          const { user_message, assistant_message, session: updatedSession } =
+            await postQuestion(sessionId, content);
+          setMessages((prev) => {
+            if (prev.length < 2) return [...prev, user_message, assistant_message];
+            const trimmed = prev.slice(0, -2);
+            return [...trimmed, user_message, assistant_message];
+          });
+          if (updatedSession) {
+            setSession((prev) =>
+              prev
+                ? {
+                  ...prev,
+                  question_count: updatedSession.question_count,
+                  status: updatedSession.status as Session["status"],
+                  updated_at: updatedSession.updated_at,
+                }
+                : prev,
+            );
+          } else if (session) {
+            setSession((s) =>
+              s ? { ...s, question_count: s.question_count + 1 } : null,
+            );
+          }
         }
       } catch (e) {
         setErrorMessage(e instanceof Error ? e.message : "发送失败");
@@ -89,7 +275,7 @@ const GamePage = (): ReactNode => {
         setIsSending(false);
       }
     },
-    [sessionId, isSending, session?.status],
+    [sessionId, isSending, isStreaming, session?.status, startStream, eventHandler],
   );
 
   const handleReveal = useCallback(async (): Promise<void> => {
@@ -180,14 +366,21 @@ const GamePage = (): ReactNode => {
         <ChatMessageList messages={messages} />
         {bottom != null ? (
           <div className="shrink-0 px-4 py-4 md:px-6">
-            <RevealPanel bottom={bottom} onPlayAgain={handlePlayAgain} />
+            <RevealPanel
+              bottom={bottom}
+              onPlayAgain={handlePlayAgain}
+              onGenerateImage={handleGenerateImage}
+              isGeneratingImage={isImageLoading}
+              images={images}
+              imageError={imageError}
+            />
           </div>
         ) : isPlaying ? (
           <ChatInputBar
             onSend={handleSend}
             onReveal={handleReveal}
             onEnd={handleEnd}
-            isLoading={isSending}
+            isLoading={isSending || isStreaming}
             canReveal
             canEnd
           />
