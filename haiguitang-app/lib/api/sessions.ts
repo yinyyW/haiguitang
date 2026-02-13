@@ -1,5 +1,12 @@
 import { fetchWithAuth } from "../apiClient";
-import type { Session, Puzzle, Message, SoupType } from "../types";
+import type {
+  Session,
+  Puzzle,
+  Message,
+  SoupType,
+  SessionImage,
+  SessionImageMode,
+} from "../types";
 
 interface CreateSessionResponse {
   session: {
@@ -35,6 +42,10 @@ interface PostQuestionResponse {
 interface RevealResponse {
   session: Session;
   puzzle: Puzzle & { bottom: string };
+}
+
+interface SessionImagesResponse {
+  items: SessionImage[];
 }
 
 export const createSession = async (
@@ -111,11 +122,37 @@ export const revealAnswer = async (sessionId: string): Promise<RevealResponse> =
 
 export const endSession = async (sessionId: string): Promise<{ session: Session }> => {
   const res = await fetchWithAuth(`/api/sessions/${sessionId}/quit`, {
-    method: 'POST',
+    method: "POST",
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error((err?.error?.message as string) ?? `HTTP ${res.status}`);
   }
   return res.json() as Promise<{ session: Session }>;
+};
+
+export const triggerSessionImage = async (
+  sessionId: string,
+  mode: SessionImageMode = "SURFACE",
+): Promise<void> => {
+  const res = await fetchWithAuth(`/api/sessions/${sessionId}/images`, {
+    method: "POST",
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err?.error?.message as string) ?? `HTTP ${res.status}`);
+  }
+};
+
+export const fetchSessionImages = async (
+  sessionId: string,
+): Promise<SessionImage[]> => {
+  const res = await fetchWithAuth(`/api/sessions/${sessionId}/images`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err?.error?.message as string) ?? `HTTP ${res.status}`);
+  }
+  const data = (await res.json()) as SessionImagesResponse;
+  return data.items;
 };

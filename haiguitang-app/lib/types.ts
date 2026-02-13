@@ -2,6 +2,7 @@ export type SoupType = 'CLEAR' | 'RED' | 'BLACK';
 export type SessionStatus = 'PLAYING' | 'REVEALED' | 'QUIT';
 export type MessageRole = 'USER' | 'ASSISTANT';
 export type AnswerType = 'YES' | 'NO' | 'IRRELEVANT' | 'BOTH' | null;
+export type SessionImageMode = 'SURFACE' | 'BOTTOM' | 'SUMMARY';
 
 export interface Session {
   id: string;
@@ -27,5 +28,11 @@ export interface Message {
   role: MessageRole;
   content: string;
   answer_type: AnswerType;
+  created_at: string;
+}
+
+export interface SessionImage {
+  id: string;
+  image_url: string;
   created_at: string;
 }
