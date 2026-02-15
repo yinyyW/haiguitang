@@ -1,4 +1,6 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { ProxyAgent, setGlobalDispatcher } from "undici";
 import { getUserByExternalId, createUser } from '../repositories/userRepository';
 import { getRandomPuzzleBySoupType } from '../repositories/puzzleRepository';
 import {
@@ -17,9 +19,219 @@ import {
   replyError,
   getRequestId,
 } from '../lib/api';
-import type { SoupType } from '../models/types';
+import type { SoupType, Session, Puzzle } from '../models/types';
 
 type AiAnswerType = 'YES' | 'NO' | 'IRRELEVANT' | 'BOTH';
+
+interface MessageRequestContext {
+  sessionId: number;
+  session: Session;
+  puzzle: Puzzle;
+  content: string;
+  isStream: boolean;
+  reqId: string;
+  headersOrigin?: string;
+}
+
+const validateMessageRequest = async (
+  request: FastifyRequest<{
+    Params: { sessionId: string };
+    Body: { content?: string; stream?: boolean };
+  }>,
+  reply: FastifyReply,
+  userId: number,
+): Promise<MessageRequestContext | null> => {
+  const sessionId = Number(request.params.sessionId);
+  if (!Number.isInteger(sessionId) || sessionId < 1) {
+    reply.status(400).send({
+      error: replyError('INVALID_ARGUMENT', 'Invalid session id', getRequestId()),
+    });
+    return null;
+  }
+  const session = await getSessionById(sessionId);
+  if (!session) {
+    reply.status(404).send({
+      error: replyError('NOT_FOUND', 'Session not found', getRequestId()),
+    });
+    return null;
+  }
+  if (session.user_id !== userId) {
+    reply.status(403).send({
+      error: replyError('FORBIDDEN', 'Not your session', getRequestId()),
+    });
+    return null;
+  }
+  const puzzle = await getPuzzleById(session.puzzle_id);
+  if (!puzzle) {
+    reply.status(500).send({
+      error: replyError('INTERNAL', 'Puzzle not found for session', getRequestId()),
+    });
+    return null;
+  }
+  const body = (request.body as { content?: string; stream?: boolean }) ?? {};
+  const content = typeof body.content === 'string' ? body.content.trim() : '';
+  if (!content) {
+    reply.status(400).send({
+      error: replyError('INVALID_ARGUMENT', 'content is required', getRequestId()),
+    });
+    return null;
+  }
+  return {
+    sessionId,
+    session,
+    puzzle,
+    content,
+    isStream: body.stream === true,
+    reqId: getRequestId(),
+    headersOrigin: request.headers.origin
+  };
+};
+
+const handlePostMessageStream = async (
+  reply: FastifyReply,
+  ctx: MessageRequestContext,
+): Promise<void> => {
+  reply.raw.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  reply.raw.setHeader('Cache-Control', 'no-cache');
+  reply.raw.setHeader('Connection', 'keep-alive');
+  reply.raw.setHeader('Access-Control-Allow-Origin', ctx.headersOrigin || '*');
+  
+  const writeEvent = (eventName: string, data: unknown): void => {
+    reply.raw.write(`event: ${eventName}\n`);
+    reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    const userMessage = await createMessage({
+      sessionId: ctx.sessionId,
+      role: 'USER',
+      content: ctx.content,
+    });
+    if (!userMessage) {
+      writeEvent('error', { message: 'Failed to save message' });
+      reply.raw.end();
+      return;
+    }
+
+    writeEvent('message.created', { user_message_id: String(userMessage.id) });
+
+    let assistantAnswerType: AiAnswerType;
+    try {
+      assistantAnswerType = await classifyAnswerWithAi({
+        question: ctx.content,
+        puzzleSurface: ctx.puzzle.surface,
+        puzzleBottom: ctx.puzzle.bottom,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error && error.message ? error.message : 'AI service unavailable';
+      writeEvent('error', { message });
+      reply.raw.end();
+      return;
+    }
+
+    const assistantContent = ANSWER_TEXT_BY_TYPE[assistantAnswerType];
+    writeEvent('assistant.delta', { delta: assistantContent });
+
+    const assistantMessage = await createMessage({
+      sessionId: ctx.sessionId,
+      role: 'ASSISTANT',
+      content: assistantContent,
+      answerType: assistantAnswerType,
+    });
+    if (!assistantMessage) {
+      writeEvent('error', { message: 'Failed to save assistant message' });
+      reply.raw.end();
+      return;
+    }
+
+    await incrementQuestionCount(ctx.sessionId);
+    const updated = await getSessionById(ctx.sessionId);
+
+    writeEvent('assistant.done', {
+      assistant_message_id: String(assistantMessage.id),
+      content: assistantContent,
+      answer_type: assistantAnswerType,
+    });
+
+    if (updated) {
+      writeEvent('session.updated', {
+        session_id: String(updated.id),
+        question_count: updated.question_count,
+        status: updated.status,
+      });
+    }
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message ? error.message : 'Stream failed';
+    writeEvent('error', { message });
+  } finally {
+    reply.raw.end();
+  }
+};
+
+const handlePostMessageNonStream = async (
+  reply: FastifyReply,
+  ctx: MessageRequestContext,
+): Promise<void> => {
+  const userMessage = await createMessage({
+    sessionId: ctx.sessionId,
+    role: 'USER',
+    content: ctx.content,
+  });
+  if (!userMessage) {
+    reply.status(500).send({
+      error: replyError('INTERNAL', 'Failed to save message', ctx.reqId),
+    });
+    return;
+  }
+
+  let assistantAnswerType: AiAnswerType;
+  try {
+    assistantAnswerType = await classifyAnswerWithAi({
+      question: ctx.content,
+      puzzleSurface: ctx.puzzle.surface,
+      puzzleBottom: ctx.puzzle.bottom,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error && error.message ? error.message : 'AI service unavailable';
+    reply.status(503).send({
+      error: replyError('AI_UNAVAILABLE', message, ctx.reqId),
+    });
+    return;
+  }
+
+  const assistantContent = ANSWER_TEXT_BY_TYPE[assistantAnswerType];
+  const assistantMessage = await createMessage({
+    sessionId: ctx.sessionId,
+    role: 'ASSISTANT',
+    content: assistantContent,
+    answerType: assistantAnswerType,
+  });
+  if (!assistantMessage) {
+    reply.status(500).send({
+      error: replyError('INTERNAL', 'Failed to save assistant message', ctx.reqId),
+    });
+    return;
+  }
+
+  await incrementQuestionCount(ctx.sessionId);
+  const updated = await getSessionById(ctx.sessionId);
+
+  reply.send({
+    user_message: formatMessageForApi(userMessage),
+    assistant_message: formatMessageForApi(assistantMessage),
+    session: updated
+      ? {
+        id: formatSessionForApi(updated).id,
+        question_count: updated.question_count,
+        status: updated.status,
+        updated_at: formatSessionForApi(updated).updated_at,
+      }
+      : undefined,
+  });
+};
 
 interface OpenAiMessage {
   content?: unknown;
@@ -81,41 +293,58 @@ const classifyAnswerWithAi = async (params: {
   puzzleSurface: string;
   puzzleBottom: string;
 }): Promise<AiAnswerType> => {
-  const apiKey = process.env.OPENAI_API_KEY;
+  if (process.env.NODE_ENV !== 'production') {
+    // 这里的 7890 换成你代理软件的 HTTP 端口
+    const proxyAgent = new ProxyAgent('http://127.0.0.1:7897'); 
+    setGlobalDispatcher(proxyAgent);
+    console.log("🌐 已挂载全局代理: http://127.0.0.1:7897");
+  }
+
+  // init gemini model
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('Missing OPENAI_API_KEY');
+    throw new Error('Missing GEMINI_API_KEY');
   }
-  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: 'system',
-          content:
-            '你是一个海龟汤游戏的裁判，根据给定的汤面、汤底和玩家的问题，判断该问题的回答应该是：YES(是)、NO(不是)、IRRELEVANT(不重要/无关)、BOTH(是也不是)。只输出一个 JSON，例如：{"answer_type":"YES"}，answer_type 只能是 YES/NO/IRRELEVANT/BOTH 之一，不要输出其他内容。',
-        },
-        {
-          role: 'user',
-          content: `汤面：${params.puzzleSurface}\n汤底：${params.puzzleBottom}\n玩家问题：${params.question}`,
-        },
-      ],
-      temperature: 0,
-    }),
+  console.log("test: init gemini model");
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+  
+  const model = genAI.getGenerativeModel({
+    model: "gemini-3-flash-preview",
   });
-  if (!response.ok) {
-    throw new Error(`AI HTTP error: ${response.status}`);
+
+  // ask question, model should only answer yes/no/irrelevant/both
+  console.log("test: ask question");
+  const prompt = `
+    你是一个海龟汤主持人。根据汤底事实回答玩家。
+    汤底：${params.puzzleBottom}
+    汤面：${params.puzzleSurface}
+    
+    你必须且只能输出如下格式的 JSON：
+    {"answer_type": "YES" | "NO" | "IRRELEVANT" | "BOTH"}
+    
+    规则：
+    - YES: 玩家猜对或符合事实。
+    - NO: 玩家猜错或不符合事实。
+    - IRRELEVANT: 问题与真相无关。
+    - BOTH: 描述中一部分对一部分错，或者情况复杂。
+    
+    玩家问题：${params.question}
+  `;
+  try {
+    const result = await model.generateContent(prompt);
+    console.log(`result: ${JSON.stringify(result)}`);
+    const responseText = result.response.text();
+    
+    const data = JSON.parse(responseText);
+    const content = extractContentFromOpenAiResponse(data);
+    const answerType = parseAnswerTypeFromContent(content);
+    if (answerType) return answerType;
+    return 'IRRELEVANT';
+  } catch (error) {
+    console.log(`Gemini AI error: ${JSON.stringify(error)}`);
+    console.log(error)
+    return 'IRRELEVANT';
   }
-  const data = (await response.json()) as unknown;
-  const content = extractContentFromOpenAiResponse(data);
-  const answerType = parseAnswerTypeFromContent(content);
-  if (answerType) return answerType;
-  return 'IRRELEVANT';
 };
 
 const SOUP_TYPES: SoupType[] = ['CLEAR', 'RED', 'BLACK'];
@@ -288,192 +517,14 @@ export const registerSessionRoutes = async (app: FastifyInstance): Promise<void>
     const user = await ensureUser(request, reply);
     if (!user) return;
 
-    const sessionId = Number(request.params.sessionId);
-    if (!Number.isInteger(sessionId) || sessionId < 1) {
-      return reply.status(400).send({
-        error: replyError('INVALID_ARGUMENT', 'Invalid session id', getRequestId()),
-      });
+    const ctx = await validateMessageRequest(request, reply, user.id);
+    if (!ctx) return;
+
+    if (ctx.isStream) {
+      await handlePostMessageStream(reply, ctx);
+    } else {
+      await handlePostMessageNonStream(reply, ctx);
     }
-
-    const session = await getSessionById(sessionId);
-    if (!session) {
-      return reply.status(404).send({
-        error: replyError('NOT_FOUND', 'Session not found', getRequestId()),
-      });
-    }
-    if (session.user_id !== user.id) {
-      return reply.status(403).send({
-        error: replyError('FORBIDDEN', 'Not your session', getRequestId()),
-      });
-    }
-
-    const puzzle = await getPuzzleById(session.puzzle_id);
-    if (!puzzle) {
-      return reply.status(500).send({
-        error: replyError('INTERNAL', 'Puzzle not found for session', getRequestId()),
-      });
-    }
-
-    const body = (request.body as { content?: string; stream?: boolean }) ?? {};
-    const isStream = body.stream === true;
-    const content =
-      typeof body.content === 'string'
-        ? body.content.trim()
-        : '';
-    if (!content) {
-      return reply.status(400).send({
-        error: replyError('INVALID_ARGUMENT', 'content is required', getRequestId()),
-      });
-    }
-
-    const reqId = getRequestId();
-    if (isStream) {
-      reply.raw.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
-      reply.raw.setHeader('Cache-Control', 'no-cache');
-      reply.raw.setHeader('Connection', 'keep-alive');
-
-      const writeEvent = (eventName: string, data: unknown): void => {
-        reply.raw.write(`event: ${eventName}\n`);
-        reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
-      };
-
-      try {
-        const userMessage = await createMessage({
-          sessionId,
-          role: 'USER',
-          content,
-        });
-        if (!userMessage) {
-          writeEvent('error', { message: 'Failed to save message' });
-          reply.raw.end();
-          return;
-        }
-
-        writeEvent('message.created', {
-          user_message_id: String(userMessage.id),
-        });
-
-        let assistantAnswerType: AiAnswerType;
-        try {
-          assistantAnswerType = await classifyAnswerWithAi({
-            question: content,
-            puzzleSurface: puzzle.surface,
-            puzzleBottom: puzzle.bottom,
-          });
-        } catch (error) {
-          const message =
-            error instanceof Error && error.message
-              ? error.message
-              : 'AI service unavailable';
-          writeEvent('error', { message });
-          reply.raw.end();
-          return;
-        }
-
-        const assistantContent = ANSWER_TEXT_BY_TYPE[assistantAnswerType];
-
-        writeEvent('assistant.delta', {
-          delta: assistantContent,
-        });
-
-        const assistantMessage = await createMessage({
-          sessionId,
-          role: 'ASSISTANT',
-          content: assistantContent,
-          answerType: assistantAnswerType,
-        });
-        if (!assistantMessage) {
-          writeEvent('error', { message: 'Failed to save assistant message' });
-          reply.raw.end();
-          return;
-        }
-
-        await incrementQuestionCount(sessionId);
-        const updated = await getSessionById(sessionId);
-
-        writeEvent('assistant.done', {
-          assistant_message_id: String(assistantMessage.id),
-          content: assistantContent,
-          answer_type: assistantAnswerType,
-        });
-
-        if (updated) {
-          writeEvent('session.updated', {
-            session_id: String(updated.id),
-            question_count: updated.question_count,
-            status: updated.status,
-          });
-        }
-      } catch (error) {
-        const message =
-          error instanceof Error && error.message
-            ? error.message
-            : 'Stream failed';
-        writeEvent('error', { message });
-      } finally {
-        reply.raw.end();
-      }
-
-      return;
-    }
-
-    const userMessage = await createMessage({
-      sessionId,
-      role: 'USER',
-      content,
-    });
-    if (!userMessage) {
-      return reply.status(500).send({
-        error: replyError('INTERNAL', 'Failed to save message', reqId),
-      });
-    }
-
-    let assistantAnswerType: AiAnswerType;
-    try {
-      assistantAnswerType = await classifyAnswerWithAi({
-        question: content,
-        puzzleSurface: puzzle.surface,
-        puzzleBottom: puzzle.bottom,
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error && error.message
-          ? error.message
-          : 'AI service unavailable';
-      return reply.status(503).send({
-        error: replyError('AI_UNAVAILABLE', message, reqId),
-      });
-    }
-
-    const assistantContent = ANSWER_TEXT_BY_TYPE[assistantAnswerType];
-
-    const assistantMessage = await createMessage({
-      sessionId,
-      role: 'ASSISTANT',
-      content: assistantContent,
-      answerType: assistantAnswerType,
-    });
-    if (!assistantMessage) {
-      return reply.status(500).send({
-        error: replyError('INTERNAL', 'Failed to save assistant message', reqId),
-      });
-    }
-
-    await incrementQuestionCount(sessionId);
-    const updated = await getSessionById(sessionId);
-
-    return reply.send({
-      user_message: formatMessageForApi(userMessage),
-      assistant_message: formatMessageForApi(assistantMessage),
-      session: updated
-        ? {
-            id: formatSessionForApi(updated).id,
-            question_count: updated.question_count,
-            status: updated.status,
-            updated_at: formatSessionForApi(updated).updated_at,
-          }
-        : undefined,
-    });
   });
 
   app.post<{ Params: { sessionId: string } }>(
