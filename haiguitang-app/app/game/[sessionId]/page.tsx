@@ -383,6 +383,7 @@ const GamePage = (): ReactNode => {
             isLoading={isSending || isStreaming}
             canReveal
             canEnd
+            hintList={puzzle.hint_list}
           />
         ) : (
           <div className="shrink-0 px-4 py-4 md:px-6">

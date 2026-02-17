@@ -29,6 +29,21 @@ export const formatSessionForApi = (s: {
   updated_at: toIso(s.updated_at),
 });
 
+const normalizeHintList = (v: unknown): string[] | null => {
+  if (Array.isArray(v)) return v.every((x) => typeof x === "string") ? v : null;
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v) as unknown;
+      return Array.isArray(parsed) && parsed.every((x) => typeof x === "string")
+        ? (parsed as string[])
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
 export const formatPuzzleForApi = (p: {
   id: number;
   title: string;
@@ -36,14 +51,19 @@ export const formatPuzzleForApi = (p: {
   difficulty: number;
   tags: string[] | null;
   bottom?: string;
-}) => ({
-  id: formatId(p.id),
-  title: p.title,
-  surface: p.surface,
-  difficulty: p.difficulty,
-  tags: p.tags ?? [],
-  ...(p.bottom != null && { bottom: p.bottom }),
-});
+  hint_list?: unknown;
+}) => {
+  const hintList = normalizeHintList(p.hint_list);
+  return {
+    id: formatId(p.id),
+    title: p.title,
+    surface: p.surface,
+    difficulty: p.difficulty,
+    tags: p.tags ?? [],
+    ...(p.bottom != null && { bottom: p.bottom }),
+    ...(hintList != null && hintList.length > 0 && { hint_list: hintList }),
+  };
+};
 
 export const formatMessageForApi = (m: {
   id: number;

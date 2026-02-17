@@ -21,6 +21,7 @@ export interface Puzzle {
   difficulty: number;
   tags: string[];
   bottom?: string;
+  hint_list?: string[];
 }
 
 export interface Message {

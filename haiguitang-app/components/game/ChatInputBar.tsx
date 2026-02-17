@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { useState, useCallback } from "react";
-import { Input, Textarea } from "../ui/Input";
+import { Textarea } from "../ui/Input";
 import { Button } from "../ui/Button";
 
 interface ChatInputBarProps {
@@ -12,6 +12,7 @@ interface ChatInputBarProps {
   isLoading: boolean;
   canReveal: boolean;
   canEnd: boolean;
+  hintList?: string[] | null;
 }
 
 export const ChatInputBar = ({
@@ -21,8 +22,11 @@ export const ChatInputBar = ({
   isLoading,
   canReveal,
   canEnd,
+  hintList,
 }: ChatInputBarProps): ReactNode => {
   const [value, setValue] = useState<string>("");
+  const [isHintsOpen, setIsHintsOpen] = useState<boolean>(false);
+  const hasHints = Boolean(hintList && hintList.length > 0);
 
   const handleSubmit = useCallback((): void => {
     const trimmed = value.trim();
@@ -71,6 +75,16 @@ export const ChatInputBar = ({
           >
             揭晓
           </Button>
+          {hasHints && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setIsHintsOpen((v) => !v)}
+              disabled={isLoading}
+            >
+              {isHintsOpen ? "收起提示" : `提示（${hintList!.length} 条）`}
+            </Button>
+          )}
           <Button
             variant="danger"
             size="sm"
@@ -80,6 +94,15 @@ export const ChatInputBar = ({
             结束本局
           </Button>
         </div>
+        {hasHints && isHintsOpen && (
+          <ul className="max-h-40 space-y-1.5 overflow-y-auto rounded-md border border-slate-600/60 bg-slate-800/60 px-3 py-2 text-sm text-slate-300">
+            {hintList!.map((h, i) => (
+              <li key={i} className="list-none">
+                {h}
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
     </div>
   );

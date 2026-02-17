@@ -305,44 +305,39 @@ const classifyAnswerWithAi = async (params: {
   if (!apiKey) {
     throw new Error('Missing GEMINI_API_KEY');
   }
-  console.log("test: init gemini model");
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+  // const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
   
-  const model = genAI.getGenerativeModel({
-    model: "gemini-3-flash-preview",
-  });
+  // const model = genAI.getGenerativeModel({
+  //   model: "gemini-3-flash-preview",
+  // });
 
   // ask question, model should only answer yes/no/irrelevant/both
-  console.log("test: ask question");
-  const prompt = `
-    你是一个海龟汤主持人。根据汤底事实回答玩家。
-    汤底：${params.puzzleBottom}
-    汤面：${params.puzzleSurface}
+  // const prompt = `
+  //   你是一个海龟汤主持人。根据汤底事实回答玩家。
+  //   汤底：${params.puzzleBottom}
+  //   汤面：${params.puzzleSurface}
     
-    你必须且只能输出如下格式的 JSON：
-    {"answer_type": "YES" | "NO" | "IRRELEVANT" | "BOTH"}
+  //   你必须且只能输出如下格式的 JSON：
+  //   {"answer_type": "YES" | "NO" | "IRRELEVANT" | "BOTH"}
     
-    规则：
-    - YES: 玩家猜对或符合事实。
-    - NO: 玩家猜错或不符合事实。
-    - IRRELEVANT: 问题与真相无关。
-    - BOTH: 描述中一部分对一部分错，或者情况复杂。
+  //   规则：
+  //   - YES: 玩家猜对或符合事实。
+  //   - NO: 玩家猜错或不符合事实。
+  //   - IRRELEVANT: 问题与真相无关。
+  //   - BOTH: 描述中一部分对一部分错，或者情况复杂。
     
-    玩家问题：${params.question}
-  `;
+  //   玩家问题：${params.question}
+  // `;
   try {
-    const result = await model.generateContent(prompt);
-    console.log(`result: ${JSON.stringify(result)}`);
-    const responseText = result.response.text();
+    // const result = await model.generateContent(prompt);
+    // const responseText = result.response.text();
     
-    const data = JSON.parse(responseText);
-    const content = extractContentFromOpenAiResponse(data);
-    const answerType = parseAnswerTypeFromContent(content);
-    if (answerType) return answerType;
+    // const data = JSON.parse(responseText);
+    // const content = extractContentFromOpenAiResponse(data);
+    // const answerType = parseAnswerTypeFromContent(content);
+    // if (answerType) return answerType;
     return 'IRRELEVANT';
   } catch (error) {
-    console.log(`Gemini AI error: ${JSON.stringify(error)}`);
-    console.log(error)
     return 'IRRELEVANT';
   }
 };
@@ -464,7 +459,6 @@ export const registerSessionRoutes = async (app: FastifyInstance): Promise<void>
           error: replyError('NOT_FOUND', 'Puzzle not found', getRequestId()),
         });
       }
-
       return reply.send({
         session: formatSessionForApi(session),
         puzzle: formatPuzzleForApi(puzzle),
